@@ -3,6 +3,11 @@
 '''let's try to build a chess engine'''
 
 1. we need data  (pgn = portable game notation, plenty of)
+   --KingBase2018-pgn (429MB) offers over 2 Million games.
+    https://archive.org/downloads/KingBase2018/
+   --KingBase2019-pgn (458MB)
+    https://archive.org/downloads/KingBase2019/
+
 
 2. we need to build a chess engine:
    + state representation (as some array of numbers 
@@ -12,6 +17,8 @@
    + extract results (WIN/LOOSE/DRAW)
    + is game over?
    + which player's turn?
+  --we can use python-chess module to grealy reduce 
+    development of a chess engine.
 
 3. need to build CNN for learning from the older data.
 
