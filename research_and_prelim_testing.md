@@ -9,6 +9,10 @@
     https://archive.org/downloads/KingBase2019/
 
 
+   There also exists other game (and board state) formats
+   for example the Forsyth-Edwards Notation (FEN) is a 
+   standard notation.
+
 2. we need to build a chess engine:
    + state representation (as some array of numbers 
      (so as to appeal to CNN's))
@@ -57,7 +61,60 @@ Edwards, and today is supported by many chess programs.
          after. 
      NOTE 3: White player performs the first move
 
-2. There exists a chess library for python, which provides
+2. Movetext 
+   This describes the moves of the game, number indicators,
+   followed by one or three "."; one if next move is white's
+   move, three if it is black's turn, using Standard Algebraic
+   Notation (SAN)
+
+   SAN -- x = capture
+          " " = single-letter character, representing the board
+                piece (K (king), Q (queen), R (rook), B (bishop),
+                       N (knight)). Pawn is usually not
+                       represented, or can be represented by P.
+          "  " = two-character algebraic name of the final square
+                 the piece moved to. 
+      
+      -- When abiguity arises, the initial starting position
+         of the piece can be provided.
+      -- "O-O" = kingside castling
+      -- "O-O-O" = queenside castling
+      --"=" = pawn promotions
+      --"#" = checking move
+
+3. Comments and annotations:
+   + comments are contained within {}
+   + Annotations from commentators are enclosed in ()
+   (these need to be ignored).
+
+
+---------------------------------------------------------                
+              (BLACK PLAYER)
+    __________________________________
+    8|   |   |   |   |   |   |   |   |
+    ----------------------------------
+    7|   |   |   |   |   |   |   |   |
+    ----------------------------------
+    6|   |   |   |   |   |   |   |   |
+    ----------------------------------
+    5|   |   |   |   |   |   | g5|   |
+    ----------------------------------
+    4|   |   |   |   |   |   |   |   |
+    ----------------------------------
+    3|   |   | c3|   |   |   |   |   |
+    ----------------------------------
+    2|   | b2|   |   |   |   |   |   |
+    ----------------------------------
+    1|   |   |   |   |   |   |   |   |
+    ----------------------------------
+       a   b   c   d   e   f   g   h
+
+               (WHITE PLAYER)
+
+---------------------------------------------------------
+
+
+3. There exists a chess library for python, which provides
    an engine and import (or interpreter) for PGN files.
    https://python-chess.readthedocs.io/
 
@@ -77,6 +134,11 @@ CHESS     https://en.wikipedia.org/wiki/Chess
     2 knights
     2 bishops
     8 pawns  
+  
+  flags:
+  ------
+  Castling (rights and achieved status) Kingside & queenside
+  "en passant" available or not?
 
 + win objective is to achieve a check-mate on the opponents 
   King, which is a scenario where the king is placed under an
@@ -84,9 +146,52 @@ CHESS     https://en.wikipedia.org/wiki/Chess
 
 + Rules book https://en.wikipedia.org/wiki/FIDE
 
++ Castling - a move invloving a player's king and either player's
+             original rooks. It is the only move in chess in which a 
+             player moves two pieces in the same move, and it is the
+             only move where a piece (other than a Knight) can jump
+             over another.
 
+             It involves moving the king two squares towards a rook
+             on the players first rank, then moving the rook to
+             the square over which the king crossed.
+
+             Requirements:
+             1. King and the chosen rook are on the player's 
+                first rank
+             2. Neither the King nor the chosen have have been
+                previously moved.
+             3. There are no pieces between the king and the 
+                chosen rook.
+             4. That the king is not currently in check.
+             5. That the king does not pass through a square that is 
+                attacked by an enemy piece.
+             6. That the king does not end up in check.
 
 
 pyhton3.7 -m pip install python-chess
+
+
+
+
+
+
+state representation:
+location specific:
++ 6*2 types of pieces (rnbqkpRNBKQP)
++ 1*2 en passant
++ blank space
+=> 15 discrete values per square of chess board
+
+meta flags:
++ 2*1 player turn (black or white)
++ 4*2 castling rights available (queenside & kingside)
++ check
+
+2**4 = 16, so 16x16x4
++
+16x16x1 to store the meta flags.
+
+
 
 
