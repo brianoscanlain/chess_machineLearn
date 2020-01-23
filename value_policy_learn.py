@@ -1,4 +1,5 @@
 #!/home/brian/miniconda3/bin/python3.7
+import os
 import random
 import numpy as np
 import math
@@ -162,7 +163,7 @@ class NetVIP(nn.Module):
     else:
       output1 = self.main(input)
     #return output1
-    pi = self.fc1(output1) #policy                                                                        # batch_size x action_size
+    pi = self.fc1(output1) #policies ranging possible actions  
     v = self.fc2(output1)  #
     return F.log_softmax(pi,dim=1),torch.tanh(v)
  
@@ -192,6 +193,17 @@ class Flatten(nn.Module):
     #return x.view(batch_size,-1)  # bad way, as it jumbles up the batches
     return x.view(-1,num_channels*img_height*img_width)
 
+
+
+
+
+def rand_idx_generator(num,length):
+  OUT=[]
+  while len(OUT) < num:
+    i = int( np.floor(np.random.random()*length) )
+    if i not in OUT:
+      OUT.append(i)
+  return OUT
 
 
 
@@ -231,90 +243,88 @@ outputs.size()
 
 
 
-class NNetWrapper(NeuralNet):
-  def __init__(self, game,ngpu):
-    self.nnet = netVP(ngpu).to(device)
-    self.board_x, self.board_y = game.board_size
-    self.action_size = game.num_actions
-    
-    if args.cuda:
-      self.nnet.cuda()
-    
+class NNetWrapper(object):
+  def __init__(self, game,net_config):
+    self.cuda = net_config['cuda']
+    if self.cuda:
+      self.device = 'cuda:0'
+    else:
+      self.device = 'cpu'
+    self.game = game
+    self.nnet = NetVIP(self.game,net_config).to(self.device)
+    self.batch_size = net_config['batch_size']
+    self.num_epocs = net_config['epochs']
+    self.loss_valuation = nn.MSELoss()
+    self.loss_policy = nn.MSELoss()
     def train(self, examples):
       """
       examples: list of examples, each example is of form (board, pi, v)
       """
       optimizer = optim.Adam(self.nnet.parameters())
-      
-      for epoch in range(args.epochs):
-        print('EPOCH ::: ' + str(epoch+1))
-        self.nnet.train()
+      tic=time.time()
 
+      for epoch in range(self.num_epocs):
+        
+        print('EPOCH ::: {}, time = {:.1f} seconds'.format(epoch+1,tic-time.time()))
+        
+        self.nnet.train()
         pi_losses = 0
         v_losses = 0
         counts = 0
         
-        data_cycles = int(np.floor(len(examples)/args.batch_size))
+        data_cycles = int(np.floor(len(examples)/self.batch_size))
         
-        for i in range(data_cycles):
-          batch_idx = rand_idx_generator(len(examples), args.batch_size)
-          boards, pis, vs = list(zip(*[examples[i] for i in batch_idx]))
-          boards = torch.FloatTensor(np.array(boards).astype(np.float64))
-          target_pis = torch.FloatTensor(np.array(pis))
-          target_vs = torch.FloatTensor(np.array(vs).astype(np.float64))
+        for i in range(data_cycles): #cycles of batches
+          batch_idx = rand_idx_generator(len(examples), self.batch_size)
+          states, pis, vs = list(zip(*[examples[b_idx] for b_idx in batch_idx]))
+          #boards = torch.FloatTensor(np.array(boards).astype(np.float64))
+          #target_pis = torch.FloatTensor(np.array(pis))
+          #target_vs = torch.FloatTensor(np.array(vs).astype(np.float64))
           # predict
-          if args.cuda:
-            boards, target_pis, target_vs = boards.contiguous().cuda(), target_pis.contiguous().cuda(), target_vs.contiguous().cuda()
-          # measure data loading time
+          if self.cuda:
+            states, target_pis, target_vs = states.contiguous().cuda(), \
+              target_pis.contiguous().cuda(), target_vs.contiguous().cuda()
           
-          # compute output
+          # retrive neural network prediction:
           out_pi, out_v = self.nnet(boards)
-          l_pi = self.loss_pi(target_pis, out_pi)
-          l_v = self.loss_v(target_vs, out_v)
+          l_pi = self.loss_policy(pis, out_pi)
+          l_v = self.loss_valuation(vs, out_v)
           total_loss = l_pi + l_v
           # record loss
           pi_losses += l_pi.item()
           v_losses += l_v.item()
-          counts += boards.size(0)
+          counts += states.size(0)
           # compute gradient and do SGD step
           optimizer.zero_grad()
           total_loss.backward()
           optimizer.step()
           # measure elapsed time
-          batch_time = time.time() - end
-          end = time.time()
-          batch_idx += 1
-          # plot progress
-          bar.suffix  = '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss_pi: {lpi:.4f} | Loss_v: {lv:.3f}'.format(
-                      batch=batch_idx,
-                      size=int(len(examples)/args.batch_size),
-                      data=data_time.avg,
-                      bt=batch_time.avg,
-                      total=bar.elapsed_td,
-                      eta=bar.eta_td,
-                      lpi=pi_losses.avg,
-                      lv=v_losses.avg,
-                      )
-          bar.next()
-        bar.finish()
+          if i%int(data_cycles/4) == 0:
+            print('i={}/{}, v_losses={:.6f}, pi_losses={:.6f},  {:.1f} secs elapsed)'.format(\
+              i+1,data_cycles, pi/((i+1)*batchSize)*100,time.time()-tic))
+          
+        #epoch stats:
+        epoch_loss_v = v_losses / counts
+        epoch_loss_p = pi_losses / counts
+        epoch_loss_tot = epoch_loss_p + epoch_loss_v 
+        print('epoch {} finished, total loss: {:.4f}'.format(\
+          epoch, epoch_loss_tot) + \
+          ', val_loss: {:.4f},val_loss: {:.4f}'.format(\
+          epoch_loss_v,epoch_loss_p))
+              
    
   def predict(self, fen):
-      """
-      board: np array with board
-      """
-      # timing
-      start = time.time()
-      
-      # preparing input
-      board = torch.stack([torch.from_numpy(serialize_FEN(fen))])
-        
-      if args.cuda: board = board.contiguous().cuda()
-      board = board.view(1, self.board_x, self.board_y)
+      #retrieve estimate
+      tic = time.time()
       self.nnet.eval()
+
+      # preparing input
+      state = torch.stack([torch.from_numpy(serialize_FEN(fen))]) 
+      if self.cuda: 
+        state = state.contiguous().cuda()
+      #retrieve estimates:
       with torch.no_grad():
         pi, v = self.nnet(board)
-
-      #print('PREDICTION TIME TAKEN : {0:03f}'.format(time.time()-start))
       return torch.exp(pi).data.cpu().numpy()[0], v.data.cpu().numpy()[0]
 
   def loss_pi(self, targets, outputs):
@@ -339,18 +349,9 @@ class NNetWrapper(NeuralNet):
       filepath = os.path.join(folder, filename)
       if not os.path.exists(filepath):
           raise("No model in path {}".format(filepath))
-      map_location = None if args.cuda else 'cpu'
+      map_location = None if self.cuda else 'cpu'
       checkpoint = torch.load(filepath, map_location=map_location)
       self.nnet.load_state_dict(checkpoint['state_dict'])
 
 
 
-
-
-def rand_idx_generator(num,length):
-  OUT=[]
-  while len(OUT) < num:
-    i = int( np.floor(np.random.random()*length) )
-    if i not in OUT:
-      OUT.append(i)
-  return OUT
