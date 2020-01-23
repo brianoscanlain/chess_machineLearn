@@ -1,3 +1,4 @@
+#!/home/brian/miniconda3/bin/python3.7
 import random
 import numpy as np
 import math
@@ -16,11 +17,12 @@ from chess_engine import serialize_FEN
 
 net_config = dict({
     'lr': 0.001,
-    'dropout': 0.3,
+    'dropout': 0.3, #we can set this --> 0 when we are not training
     'epochs': 10,
     'batch_size': 64,
     'cuda': torch.cuda.is_available(),
-    'num_channels': 6,
+    'num_channels_init': 6,  #descriptor of number of channels of state tensor
+    'num_channels_during_nn': 20, #num of channels to grow tensor within nn
     'ngpu':2
 })
 
@@ -103,8 +105,11 @@ class NetVIP(nn.Module):
     self.board_x, self.board_y = game_handle.getBoardSize()
     self.action_size = game_handle.getActionSize()
     #self.config = net_config
-    self.num_channels = net_config['num_channels']
+    self.nc_init = net_config['num_channels_init']
+    self.nc_nn = net_config['num_channels_during_nn']
+    self.im2Dh = int(np.ceil(np.sqrt(self.board_x*self.board_y*self.nc_init)))
     self.ngpu =  net_config['ngpu']
+    self.dropout = net_config['dropout']
     #
     self.fc1 = nn.Linear(512, self.action_size)
     self.fc2 = nn.Linear(512, 1)
@@ -112,35 +117,43 @@ class NetVIP(nn.Module):
     self.main = nn.Sequential(
       #Block 1:
       Reshape2D(), #3D to 2D reshape with padding (bs,nc,h,w) --> (bs,1,X,X), 
-      nn.Conv2d(1, self.num_channels, 3, stride=1, padding=1),
-      nn.BatchNorm2d(self.num_channels),
+      nn.Conv2d(1, self.nc_nn, 3, stride=1, padding=1),
+      nn.BatchNorm2d(self.nc_nn),
       nn.ReLU(True),
-      # #Block 2:
-      # nn.Conv2d(self.num_channels, self.num_channels, 3, stride=1, padding=1),
-      # nn.BatchNorm2d(self.num_channels),
-      # nn.ReLU(True),
-      # #Block 3:
-      # nn.Conv2d(self.num_channels, self.num_channels, 3, stride=1),
-      # nn.BatchNorm2d(self.num_channels),
-      # nn.ReLU(True),
-      # #Block 4:
-      # nn.Conv2d(self.num_channels, self.num_channels, 3, stride=1),
-      # nn.BatchNorm2d(self.num_channels),
-      # nn.ReLU(True),           (bs,nc,X-4,X-4)
-      #decode block 1:
-      # Flatten(),
-      # nn.Linear(self.num_channels*16*16, 1024),
-      # nn.BatchNorm2d(self.num_channels),
-      # F.ReLU(),
-      # F.dropout(p=self.dropout, training=self.training),
-      # #decode block 2:
-      # nn.Linear(1024, 512),
-      # nn.BatchNorm2d(512),
-      # F.ReLU(),
-      # F.dropout(p=self.dropout, training=self.training),
-      # #
-      # nn.Linear(512, self.action_size),
-      # nn.Linear(512, 1)
+      #Block 2:
+      nn.Conv2d(self.nc_nn, self.nc_nn, 3, stride=1, padding=1),
+      nn.BatchNorm2d(self.nc_nn),
+      nn.ReLU(True),
+      #Block 3:
+      nn.Conv2d(self.nc_nn, self.nc_nn, 3, stride=1),
+      nn.BatchNorm2d(self.nc_nn),
+      nn.ReLU(True),
+      #Block 4:
+      nn.Conv2d(self.nc_nn, self.nc_nn, 3, stride=1),
+      nn.BatchNorm2d(self.nc_nn),
+      nn.ReLU(True),        #   (bs,nc,X-4,X-4)
+      #decode block 1: #2D to 1D flatten, followed by linear blocks:
+      Flatten(),   #(bs,nc=20,16x16) --> (bs,5120)
+      #block 5
+      nn.Linear(self.nc_nn*(self.im2Dh-4)*(self.im2Dh-4), 4096),
+      nn.BatchNorm1d(4096),
+      nn.ReLU(),
+      nn.Dropout(p=self.dropout),
+      #block 6:
+      nn.Linear(4096, 2048),
+      nn.BatchNorm1d(2048),
+      nn.ReLU(),
+      nn.Dropout(p=self.dropout),
+      #block 6:
+      nn.Linear(2048, 1024),
+      nn.BatchNorm1d(1024),
+      nn.ReLU(),
+      nn.Dropout(p=self.dropout),
+      #block 7:
+      nn.Linear(1024, 512),
+      nn.BatchNorm1d(512),
+      nn.ReLU(),
+      nn.Dropout(p=self.dropout),  #(bs,512) tensor returned.
     )
   
   def forward(self, input):
@@ -148,10 +161,10 @@ class NetVIP(nn.Module):
       output1 = nn.parallel.data_parallel(self.main, input, range(self.ngpu))
     else:
       output1 = self.main(input)
-    return output1
-    #pi = self.fc1(output1) #policy                                                                        # batch_size x action_size
-    #v = self.fc2(output1)  #
-    #return F.log_softmax(pi,dim=1),torch.tanh(v)
+    #return output1
+    pi = self.fc1(output1) #policy                                                                        # batch_size x action_size
+    v = self.fc2(output1)  #
+    return F.log_softmax(pi,dim=1),torch.tanh(v)
  
 
 
