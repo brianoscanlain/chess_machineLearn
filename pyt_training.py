@@ -78,6 +78,65 @@ def weights_init(m):
 
 
 
+
+
+class netVP(nn.Module):
+  def __init__(self, game, args):
+    # game params
+    self.board_x, self.board_y = game.getBoardSize()
+    self.action_size = game.getActionSize()
+    self.args = args
+    
+    super(netA, self).__init__()
+    self.ngpu = ngpu
+    self.fc3 = nn.Linear(512, self.action_size)
+    self.fc4 = nn.Linear(512, 1)
+    self.main = nn.Sequential(
+      #Block 1:
+      nn.Conv2d(1, args.num_channels, 3, stride=1, padding=1),
+      nn.BatchNorm2d(args.num_channels),
+      F.ReLU(),
+      #Block 2:
+      nn.Conv2d(args.num_channels, args.num_channels, 3, stride=1, padding=1),
+      nn.BatchNorm2d(args.num_channels),
+      F.ReLU(),
+      #Block 3:
+      nn.Conv2d(args.num_channels, args.num_channels, 3, stride=1),
+      nn.BatchNorm2d(args.num_channels),
+      F.ReLU(),
+      #Block 4:
+      nn.Conv2d(args.num_channels, args.num_channels, 3, stride=1),
+      nn.BatchNorm2d(args.num_channels),
+      F.ReLU(),
+      #decode block 1:
+      Flatten(),
+      nn.Linear(args.num_channels*4*4, 1024),
+      nn.BatchNorm2d(args.num_channels),
+      F.ReLU(),
+      F.dropout(p=self.args.dropout, training=self.training),
+      #decode block 2:
+      nn.Linear(1024, 512),
+      nn.BatchNorm2d(512),
+      F.ReLU(),
+      F.dropout(p=self.args.dropout, training=self.training),
+      #
+      nn.Linear(512, self.action_size),
+      nn.Linear(512, 1)
+    )
+  
+  def forward(self, input):
+    if input.is_cuda and self.ngpu > 1:
+      output1 = nn.parallel.data_parallel(self.main, input, range(self.ngpu))
+    else:
+      output1 = self.main(input)
+    pi = self.fc1(output1) #policy                                                                        # batch_size x action_size
+    v = self.fc1(output1)  #
+    return F.log_softmax(pi,dim=1),torch.tanh(v)
+ 
+
+
+
+
 class NetA(nn.Module):
   def __init__(self, ngpu,nc,ndf):
     super(NetA, self).__init__()
@@ -117,6 +176,8 @@ class NetA(nn.Module):
       output = self.main(input)
     return output.squeeze(1)#.view(-1, 1).squeeze(1)
  
+
+
 
 class NetB(nn.Module):
   def __init__(self, ngpu,nc,ndf):
@@ -348,7 +409,7 @@ def train():
   lr=0.0002 #learning rate
   precision_lvl='O1' #redundant, was going to implement mixed precision
                      #using NVIDIA 
-  n_epochs=25# number of times to train over the data.
+  n_epochs=250# number of times to train over the data.
   train_valid_ratio=0.7 #ratio for splitting the data into train/test.
   device='cuda:0' #device to run the computation on (GPU or CPU)
   lazy_factor=200 #=1, each epoch should cover every data, and 
