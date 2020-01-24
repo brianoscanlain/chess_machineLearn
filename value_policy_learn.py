@@ -18,7 +18,7 @@ from chess_engine import serialize_FEN
 
 net_config = dict({
     'lr': 0.001,
-    'dropout': 0.3, #we can set this --> 0 when we are not training
+    'dropout': 0.3, #when not training (i.e. net.eval()), this --> 0 automatically
     'epochs': 10,
     'batch_size': 64,
     'cuda': torch.cuda.is_available(),
@@ -31,9 +31,17 @@ game_config = dict({
     'name': 'chess',
     'board_size' : [8,8],
     'number_of_actions': 20,
-    'playerTurn': 'w',
+    'playerTurn': True,
     'fen': 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
 })
+
+
+train_config = dict({
+    'numIter': 'chess',
+    'num_epochs' : [8,8],
+})
+
+
 
 
 # custom weights initialization called on  netD
@@ -55,8 +63,11 @@ class gameMetaData():
     self.num_actions = game_config['number_of_actions']
     self.board_size = game_config['board_size']
     self.playerTurn = game_config['playerTurn']
+    self.canon_fen = game_config['fen']
     self.fen = game_config['fen']
     self.gameOver = False
+    self.outcome = None
+    self.reward = 0
     self.actions = [] 
   
   def updateOptions(self,num_actions,playerTurn):
@@ -65,15 +76,44 @@ class gameMetaData():
     self.playerTurn = playerTurn
     
   def updateFEN(self,fen):
-    self.fen = fen
+    self.fen = fen 
     game=chess.Board(fen)
     self.gameOver = game.is_game_over()
     if self.gameOver:
       self.actions = []
+      self.outcome = game.result()
+      self.reward = {'1-0':1, '1/2-1/2':0, '0-1':-1}[game.result()]
     else:
       self.actions = [a.xboard() for a in game.legal_moves]
     self.num_actions = len(self.actions)
-    self.playerTurn = 'w' if game.turn else 'b'
+    self.playerTurn = game.turn
+    #update canonical:
+    if self.playerTurn:
+      self.canon_fen = fen
+    else: 
+      self.canon_fen = fen[:fen.rfind('b')] + 'w' + fen[fen.rfind('b'):]
+
+  def retrieveNextState(self,a):
+    game=chess.Board(self.fen)
+    if game.is_legal(chess.Move.from_uci(a)):
+      game.push_xboard(a)
+      return game.fen()
+    else:
+      print("error found, action '{}'".format(a)\
+      +" is not considered legal for board:\r\n{}".format(self.fen))
+      try:
+        game.push_xboard(a)
+        return game.fen()
+      except:
+        return None
+
+  def nextState(self,a):
+    fen=retrieveNextState(a)
+    updateFEN(fen)
+  
+  def startNewGame(self):
+    starting_fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+    updateFEN(starting_fen)
   
   def getBoardSize(self):
     return self.board_size
@@ -216,7 +256,7 @@ device='cuda:0'
 game = gameMetaData(game_config)
 net = NetVIP(game,net_config).to(device)
 net.apply(weights_init)
-t = torch.zeros(10,6,8,8)
+t = torch.zeros(1,6,8,8)
 
 t = t.to(device)
 outputs = net(t)
@@ -311,7 +351,7 @@ class NNetWrapper(object):
           epoch, epoch_loss_tot) + \
           ', val_loss: {:.4f},val_loss: {:.4f}'.format(\
           epoch_loss_v,epoch_loss_p))
-              
+      #return updated nnet          
    
   def predict(self, fen):
       #retrieve estimate
@@ -352,6 +392,181 @@ class NNetWrapper(object):
       map_location = None if self.cuda else 'cpu'
       checkpoint = torch.load(filepath, map_location=map_location)
       self.nnet.load_state_dict(checkpoint['state_dict'])
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+mcts_config = dict({
+    'numMCTSSims': 1000,
+})
+
+
+
+
+
+
+
+
+class MCTS():
+  def __init__(self, game, mcts_config):
+    self.game = game  #this game handle provides functionality
+    self.config = mcts_config
+    self.Qsa = {}       # stores Q values for s,a (as defined in the paper)
+    self.Nsa = {}       # stores #times edge s,a was visited
+    self.Ns = {}        # stores #times board s was visited
+    self.Pi = {}        # stores initial policy (returned by neural net)
+    self.Ts = {}        # stores game.getGameEnded ended for board s
+    self.Vs = {}  
+  
+  def getActionProb(self,fen, temp=1):
+    """
+    This function performs numMCTSSims simulations of MCTS starting from
+    canonicalBoard.
+    Returns:
+        probs: a policy vector where the probability of the ith action is
+               proportional to Nsa[(s,a)]**(1./temp)
+    """
+    for i in range(self.config.numMCTSSims):
+      self.search(fen)  #populate Qsa, Nsa, Ns, Pi
+    #    
+
+    #
+    if temp==0:
+      bestA = np.argmax(self.Nsa[fen])
+      probs = [0]*len(self.Nsa[fen])
+      probs[bestA]=1
+      return probs
+    #
+    counts = [a**(1./temp) for a in self.Nsa[fen]]
+    counts_sum = float(sum(counts))
+    probs = [x/counts_sum for x in counts]
+    return probs
+
+  def search(self, fen_state,nnet):
+    #update game engine with current state:
+    self.game.updateFEN(fen_state)
+    #if game over, return reward:
+    if self.game.gameOver:   #reward winning player (1 if player w wins)
+      reward = {'1-0':1,'1/2-1/2':0,'0-1':-1}[self.game.result()]
+      return reward
+    
+    if fen_state not in self.Ns.keys(): #unseen state found!
+      self.Ns[fen_state] = 1
+      self.Nsa[fen_state]=[0]*self.game.num_actions #just simply initializing here
+      self.Qsa[fen_state]=[0]*self.game.num_actions #just simply initializing here
+      p,v = nnet.predict(serialize_FEN(fen_state))
+      self.Pi[fen_state] = p.squeeze().tolist()
+      return v
+    
+    #determine best move (using evolving estimates of QSA, PSA, NSA)
+    max_u, best_a = -float("inf"),-1
+    for a in self.game.actions:
+      u = self.Qsa[fen_state][a] + \
+        self.c_puct*self.Pi[fen_state][a]*sqrt(\
+          sum(self.Ns[fen_state]))/(1+self.Nsa[fen_state][a])
+      if u>max_u:
+        max_u = u
+        best_a = a
+    a = best_a
+    
+    #perform next move:
+    fen_state_future = self.game.retrieveNextState(a)
+    game.update(fen_state_future)
+    v = search(fen_state_future)
+    self.Qsa[fen_state][a] = (self.Nsa[fen_state][a]*self.Qsa[fen_state][a] + v)/\
+                             (self.Nsa[fen_state][a]+1) # = v if Nsa = 0
+    self.Nsa[fen_state][a] +=1
+    return v
+
+
+
+
+def spawnBots(game_config,net_config. train_config):   # formerly known as "policyIterSP"
+  game = gameMetaData(game_config)
+  nnet=NNetWrapper(game, net_config) #init a game bot
+  nnet_alt = NNetWrapper(game, net_config) #init a game bot
+  examples = []
+  #put bots to work:
+  for i in range(net_config.numIters):
+    for e in range(net_config.numEpochs):
+      examples += spawnBotGame()
+    #each iteration, let's train
+    self.nnet.train(examples)
+    frac_win = pit(new_nnet, nnet)
+    if frac_win > threshold:
+      nnet = new_nnet
+    return nnet
+
+
+
+
+
+
+
+
+
+class Coach():
+  def __init(self,game_config,net_config,train_config):
+    self.game = gameMetaData()
+    self.nnet1 = NNetWrapper(game, net_config) #init a game bot
+    self.nnet2 = self.nnet.__class__(self.game) #alternative bot
+    self.mcts = mcts = MCTS(game, mcts_config)
+    self.trainExampleHistory = []
+    self.skipFirstSelfPlay = False
+    self.tempThreshold
+
+  
+  def spawnBotGame(self):   #formerly known as "executeEpisode"
+    recorder = []
+    self.game.startNewGame()
+    #
+    while True:
+      for _ in range(self.mcts.config.numMCTSims):
+        mcts.search(self.game.fen, self.game, self.nnet2) #build Qtables
+      recorder.append([s, self.mcts.pi(s), self.game.playerTurn]) #retrieve and store
+      a = np.random.choice(len(self.mcts.pi(s)),p=self.mcts.pi(s)) #choose action
+      s = self.game.nextState(a) #perform action
+      if game.gameOver(s):
+        #we now assign the reward. Each action the winner performed gets
+        #a +1, while the loosing actions get assigned -1. Draw reward = 0
+        recorder = [(x[0], x[1], game.result*((-1)**x[2]))  for x in examples]
+        return recorder
+
+  def botBattle(self):
+    #Here we will let the two n
+    self.game.startNewGame()
+
+
+
+
+
 
 
 
